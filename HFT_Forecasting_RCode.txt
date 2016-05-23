@@ -1,0 +1,168 @@
+setwd("D:/HFT forecasting")  # Setting the work directory
+#library(fBasics)
+#library(lars)
+library(zoo)
+library(glmnet) 
+
+#Loading Data
+QuoteData=read.csv("Quotedata.csv",header=T)
+TradeData=read.csv("TradeData.csv",header=T)
+
+#Synchronising data
+QuoteData$index<-1:nrow(QuoteData)
+c=merge(QuoteData,TradeData,by="Time",all.x=TRUE)
+Data=c[order(c$index),]
+
+#sum(Data$price<0) = 12 trade prices were -999
+Data$price[Data$price<0]=NA
+Data$volume[Data$price<0]=NA
+
+#cleaning data
+idx=(Data$bid<Data$ask) & (Data$bsize>0) & (Data$asize>0) & !(is.na(Data$price))
+cleanData = Data[idx,]
+
+####Constructing signals
+#### Bid-Ask Volume Imbalance
+BAVI1=cleanData$bsize - cleanData$asize
+BAVI2=(cleanData$bsize - cleanData$asize)/(cleanData$bsize + cleanData$asize)
+
+BAVI1_MA2 = rollapply(BAVI1,2,mean,na.rm=TRUE)
+BAVI1_MA4 = rollapply(BAVI1,4,mean,na.rm=TRUE)
+BAVI1_MA8 = rollapply(BAVI1,8,mean,na.rm=TRUE)
+
+BAVI2_MA2 = rollapply(BAVI2,2,mean,na.rm=TRUE)
+BAVI2_MA4 = rollapply(BAVI2,4,mean,na.rm=TRUE)
+BAVI2_MA8 = rollapply(BAVI2,8,mean,na.rm=TRUE)
+
+##### Signed Transaction Volume
+N=length(cleanData$price)
+STV1=2*(cleanData$price[2:N]>0.5*(cleanData$bid[1:(N-1)]+cleanData$ask[1:(N-1)]))-1
+STV2=cleanData$price[2:N]-0.5*(cleanData$bid[1:(N-1)]+cleanData$ask[1:(N-1)])
+STV3=STV1*cleanData$volume[2:N]
+STV4=STV2*cleanData$volume[2:N]
+
+STV1_MA2= rollapply(STV1,2,mean,na.rm=TRUE)
+STV1_MA4 = rollapply(STV1,4,mean,na.rm=TRUE)
+STV1_MA8 = rollapply(STV1,8,mean,na.rm=TRUE)
+
+STV2_MA2= rollapply(STV2,2,mean,na.rm=TRUE)
+STV2_MA4 = rollapply(STV2,4,mean,na.rm=TRUE)
+STV2_MA8 = rollapply(STV2,8,mean,na.rm=TRUE)
+
+STV3_MA2= rollapply(STV3,2,mean,na.rm=TRUE)
+STV3_MA4 = rollapply(STV3,4,mean,na.rm=TRUE)
+STV3_MA8 = rollapply(STV3,8,mean,na.rm=TRUE)
+
+STV4_MA2= rollapply(STV4,2,mean,na.rm=TRUE)
+STV4_MA4 = rollapply(STV4,4,mean,na.rm=TRUE)
+STV4_MA8 = rollapply(STV4,8,mean,na.rm=TRUE)
+
+##### SmartPrice
+SP = (cleanData$bid*cleanData$asize +cleanData$ask*cleanData$bsize)/(cleanData$asize+cleanData$bsize)
+SP1 = SP - 0.5*(cleanData$bid + cleanData$ask)
+
+SP1_MA2= rollapply(SP1,2,mean,na.rm=TRUE)
+SP1_MA4 = rollapply(SP1,4,mean,na.rm=TRUE)
+SP1_MA8 = rollapply(SP1,8,mean,na.rm=TRUE)
+
+SPTrend_2 = SP[2:N] - rollapply(SP,2,mean,na.rm=TRUE)
+SPTrend_4 = SP[4:N] - rollapply(SP,4,mean,na.rm=TRUE)
+SPTrend_8 = SP[8:N] - rollapply(SP,8,mean,na.rm=TRUE)
+
+##### VWAP - Volume weighted Average Price across time
+
+N=length(cleanData$price)
+trade_price_vol = cleanData$price*cleanData$vol
+trade_vol = cleanData$vol
+
+VWAP2 = (1/rollapply(trade_vol,2,sum,na.rm=TRUE))*(rollapply(trade_price_vol,2,sum,na.rm=TRUE))
+VWAP4 = (1/rollapply(trade_vol,4,sum,na.rm=TRUE))*(rollapply(trade_price_vol,4,sum,na.rm=TRUE))
+VWAP8 = (1/rollapply(trade_vol,8,sum,na.rm=TRUE))*(rollapply(trade_price_vol,8,sum,na.rm=TRUE))
+
+VWAP_S2 = VWAP2 - 0.5*(cleanData$bid[2:N]+cleanData$ask[2:N])
+VWAP_S4 = VWAP4 - 0.5*(cleanData$bid[4:N]+cleanData$ask[4:N])
+VWAP_S8 = VWAP8 - 0.5*(cleanData$bid[8:N]+cleanData$ask[8:N])
+
+N=length(VWAP4)
+VWAP4_Trend2 = VWAP4[2:N] - rollapply(VWAP4,2,mean,na.rm=TRUE)
+VWAP4_Trend4 = VWAP4[4:N] - rollapply(VWAP4,4,mean,na.rm=TRUE)
+
+N=length(VWAP8)
+VWAP8_Trend2 = VWAP8[2:N] - rollapply(VWAP8,2,mean,na.rm=TRUE)
+VWAP8_Trend4 = VWAP8[4:N] - rollapply(VWAP8,4,mean,na.rm=TRUE)
+VWAP8_Trend8 = VWAP8[8:N] - rollapply(VWAP8,8,mean,na.rm=TRUE)
+
+
+####  Current Trade Price
+tradeprice = cleanData$price
+N=length(tradeprice)
+
+tradeprice_Trend2 = tradeprice[2:N]-rollapply(tradeprice,2,mean,na.rm=TRUE)
+tradeprice_Trend4 = tradeprice[4:N]-rollapply(tradeprice,4,mean,na.rm=TRUE)
+tradeprice_Trend8 = tradeprice[8:N]-rollapply(tradeprice,8,mean,na.rm=TRUE)
+
+#### Directional mvmt of executed prices
+
+pricemvmt = 2*(tradeprice[2:N]>tradeprice[1:(N-1)]) -1
+
+#### Forward simple returns
+mid = 0.5*(cleanData$bid+cleanData$ask)
+N=length(mid)
+rtn = (1/mid[1:(N-1)])*(mid[2:N]-mid[1:(N-1)])
+
+price=cleanData$price
+N=length(price)
+pricertn = (1/price[1:(N-1)])*(price[2:N]-price[1:(N-1)])
+
+
+##### I am selecting only 5 signal for the this test
+##### First 12000 rows are taken as Train Data 
+X1=VWAP8_Trend8[1:12000]
+X2=SPTrend_8[8:12007]
+X3=BAVI1_MA8[8:12007]
+X4=STV1_MA8[7:12006]
+X5=tradeprice_Trend8[8:12007]
+X=cbind(X1,X2,X3,X4,X5)
+Y=pricertn[14:12013]
+
+#model.lasso <- lars(X, Y, type="lasso")
+#lambda.lasso <- c(model.lasso$lambda,0)
+#beta <- coef(model.lasso)
+
+# Lasso - alpha = 1
+fit.lasso <- glmnet(X, Y, family="gaussian", alpha=1)
+#fit.lasso$beta
+
+# Ridge - alpha = 0
+fit.ridge <- glmnet(X, Y, family="gaussian", alpha=0.5)
+#fit.ridge$beta
+
+# Elastic net - alpha = 0.5
+fit.elnet <- glmnet(X, Y, family="gaussian", alpha=0)
+#fit.elnet$beta
+#elastic net method gave 81 number of lambda i.e that many number of model choices
+
+#### constructing Test Data 
+X1T=VWAP8_Trend8[12001:16023]
+X2T=SPTrend_8[12008:16030]
+X3T=BAVI1_MA8[12008:16030]
+X4T=STV1_MA8[12007:16029]
+X5T=tradeprice_Trend8[12008:16030]
+YT=pricertn[12014:16036]
+XT=cbind(X1T,X2T,X3T,X4T,X5T)
+
+##### 
+Yhat_elnet=predict(fit.elnet,s=fit.elnet$lambda.lse,newx=XT)
+mse <- mean((YT - Yhat_elnet)^2)
+
+Prx=price[12014:16036]
+
+#PnL using each model
+Zhat=Zhat=Prx*(Yhat_elnet)
+
+A1=apply(Zhat,2,mean)
+B1=apply(Zhat,2,var)
+B2=sqrt(B1)
+
+## Sharpe Ratio
+SR=(1/B2)*A1
